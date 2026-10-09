@@ -1217,26 +1217,37 @@ def format_post(rec):
 # --------------------------------------------------------------------------- #
 
 def crawl_full_history(client, storage, user_id, data_dir, max_pages=1000,
-                       page_delay=0.9):
+                       page_delay=0.9, resume=False):
     """
     从第 1 页开始顺序翻页，直到某页返回空（或命中 max_pages 安全上限）。
     特性：
-    - 每页瞬时错误自动重试（3 次，指数退避）
+    - 每页瞬时错误自动重试（5 次，指数退避）
     - 登录失效(10022) 时重新弹窗登录一次后继续
     - 页间随机等待，降低触发风控概率
     - 进度写入 history_progress.json，抓取情况实时反映到网页面板
+    - resume=True 时从进度文件中的下一页继续，避免重复抓取
     返回 (新入库数, 最后一页页码)。
     """
     progress_path = os.path.join(data_dir, "history_progress.json")
     new_total = 0
     login_refreshed = False
     page = 1
+    if resume and os.path.exists(progress_path):
+        try:
+            with open(progress_path, "r", encoding="utf-8") as f:
+                last_done = int(json.load(f).get("last_completed_page", 0))
+            if last_done > 0:
+                page = last_done + 1
+                log("断点续抓：从第 %d 页开始（上次已完成第 %d 页）。"
+                    % (page, last_done))
+        except (ValueError, OSError, json.JSONDecodeError):
+            page = 1
 
     while page <= max_pages:
         data = None
         last_err = None
 
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 data = client.fetch_timeline(page=page)
                 break
@@ -1253,14 +1264,14 @@ def crawl_full_history(client, storage, user_id, data_dir, max_pages=1000,
                 wait = 3 * (attempt + 1)
                 log("第 %d 页会话异常（%s），%d 秒后重试 ..." % (page, e, wait))
                 time.sleep(wait)
-            except (urllib.error.URLError, RuntimeError) as e:
+            except (urllib.error.URLError, ConnectionError, OSError, RuntimeError) as e:
                 last_err = e
                 wait = 2 * (attempt + 1)
                 log("第 %d 页请求异常（%s），%d 秒后重试 ..." % (page, e, wait))
                 time.sleep(wait)
 
         if data is None:
-            raise RuntimeError("第 %d 页连续 3 次抓取失败：%s" % (page, last_err))
+            raise RuntimeError("第 %d 页连续 5 次抓取失败：%s" % (page, last_err))
 
         statuses = data.get("statuses") or []
         if not statuses:
@@ -1398,7 +1409,7 @@ def run(args):
                     storage.close()
                 return 0
             storage.close()
-            return 1
+            return 0 if panel is None else 1
 
         if not logged_in:
             log("未能完成登录。已有数据仍可在网页浏览；需要继续抓取时回复"
@@ -1409,7 +1420,7 @@ def run(args):
         try:
             new_n, last_page = crawl_full_history(
                 client, storage, args.user_id, data_dir,
-                max_pages=max(1, args.max_pages))
+                max_pages=max(1, args.max_pages), resume=args.resume)
         except LoginRequiredError:
             log("仍无权限抓取历史。")
             refresh_snapshot()
@@ -1534,6 +1545,8 @@ def parse_args():
  help='手动 Cookie，如 "xq_a_token=..; ssxmod_itna=.."')
     p.add_argument("--full-history", action="store_true",
                    help="一次性抓取该用户全部历史帖子（需扫码登录），完成后网页面板保持运行")
+    p.add_argument("--resume", action="store_true",
+                   help="配合 --full-history 使用：从 history_progress.json 断点续抓")
     p.add_argument("--max-pages", type=int, default=1000,
                    help="全量历史抓取的页数安全上限，默认 %(default)s")
     p.add_argument("--once", action="store_true",
