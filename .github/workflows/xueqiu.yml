@@ -3,8 +3,8 @@ name: xueqiu-monitor
 on:
   schedule:
     # 每小时两次互为兜底：GitHub schedule 可能延迟或跳过单次触发
-    - cron: '7 * * * *'
-    - cron: '37 * * * *'
+    - cron: '11 * * * *'
+    - cron: '41 * * * *'
   workflow_dispatch:
 
 permissions:
