@@ -470,14 +470,6 @@ a.qu-link:hover{text-decoration:underline}
 }
 .card-foot a{color:var(--link);text-decoration:none;white-space:nowrap}
 .card-foot a:hover{text-decoration:underline}
-.btn-more{
-  display:block; width:100%; margin:8px 0 0; padding:12px;
-  background:#fff; border:1px solid var(--line); border-radius:10px;
-  color:var(--ink); font-size:14px; cursor:pointer;
-}
-.btn-more:hover{border-color:var(--primary);color:var(--primary)}
-.btn-more:disabled{color:var(--sub);cursor:default}
-.endtip{text-align:center;color:var(--sub);font-size:13px;margin:20px 0}
 .empty{text-align:center;color:var(--sub);padding:80px 0;font-size:14px}
 @media (max-width:520px){
   .card{padding:15px 16px}
@@ -495,8 +487,6 @@ a.qu-link:hover{text-decoration:underline}
 <div class="banner" id="newBanner"></div>
 <main class="wrap">
   <div id="feed"></div>
-  <button class="btn-more" id="moreBtn" hidden>加载更多</button>
-  <div class="endtip" id="endTip" hidden>— 已经到底了 —</div>
   <div class="empty" id="emptyTip" hidden>暂无记录，程序运行后抓到的发言会显示在这里。</div>
 </main>
 <script id="snapshot-data" type="application/json"></script>
@@ -507,14 +497,11 @@ a.qu-link:hover{text-decoration:underline}
       return JSON.parse(document.getElementById('snapshot-data').textContent);
     }catch(e){ return null; }
   })();
-  var PAGE = 20;
   var feed = document.getElementById('feed');
-  var moreBtn = document.getElementById('moreBtn');
-  var endTip = document.getElementById('endTip');
   var emptyTip = document.getElementById('emptyTip');
   var statsLine = document.getElementById('statsLine');
   var banner = document.getElementById('newBanner');
-  var newestId = null, oldestId = null, total = 0, loading = false;
+  var newestId = null, total = 0;
 
   function el(tag, cls, text){
     var e = document.createElement(tag);
@@ -585,66 +572,27 @@ a.qu-link:hover{text-decoration:underline}
   function applyInitialPage(posts){
     if(posts.length){
       newestId = posts[0].id;
-      oldestId = posts[posts.length - 1].id;
       renderList(posts, false);
     }else{
       emptyTip.hidden = false;
     }
-    moreBtn.hidden = posts.length < PAGE;
-    if(posts.length && posts.length < PAGE) endTip.hidden = false;
     updateStats();
   }
 
   function loadInitial(){
     if(SNAPSHOT){
       total = SNAPSHOT.total;
-      applyInitialPage((SNAPSHOT.posts || []).slice(0, PAGE));
+      applyInitialPage(SNAPSHOT.posts || []);
       return Promise.resolve();
     }
-    return getJSON('/api/posts?limit=' + PAGE).then(function(d){
+    return getJSON('/api/posts?limit=10000').then(function(d){
       total = d.total;
       applyInitialPage(d.posts || []);
     });
   }
 
-  function loadMore(){
-    if(loading) return;
-    loading = true;
-    moreBtn.disabled = true;
-    moreBtn.textContent = '加载中…';
-    var nextPage;
-    if(SNAPSHOT){
-      var allPosts = SNAPSHOT.posts || [];
-      var index = -1;
-      for(var k=0;k<allPosts.length;k++){
-        if(allPosts[k].id === oldestId){ index = k; break; }
-      }
-      nextPage = Promise.resolve({posts: allPosts.slice(index + 1, index + 1 + PAGE)});
-    }else{
-      nextPage = getJSON('/api/posts?limit=' + PAGE + '&before_id=' + oldestId);
-    }
-    nextPage
-      .then(function(d){
-        var posts = d.posts || [];
-        if(posts.length){
-          oldestId = posts[posts.length - 1].id;
-          renderList(posts, true);
-        }
-        if(posts.length < PAGE){
-          moreBtn.hidden = true;
-          endTip.hidden = false;
-        }
-      })
-      .catch(function(){ moreBtn.textContent = '加载失败，点击重试'; })
-      .then(function(){
-        loading = false;
-        moreBtn.disabled = false;
-        if(moreBtn.textContent === '加载中…') moreBtn.textContent = '加载更多';
-      });
-  }
-
   function checkNew(){
-    getJSON('/api/posts?limit=' + PAGE).then(function(d){
+    getJSON('/api/posts?limit=10000').then(function(d){
       total = d.total;
       updateStats();
       var fresh = (d.posts || []).filter(function(p){ return p.id > newestId; });
@@ -704,12 +652,11 @@ a.qu-link:hover{text-decoration:underline}
 
     SNAPSHOT = decrypted;
     total = decrypted.total;
-    applyInitialPage((decrypted.posts || []).slice(0, PAGE));
+    applyInitialPage(decrypted.posts || []);
     document.getElementById('gate').style.display = 'none';
   }
   window.__xqDecrypt = decryptSnapshot;
 
-  moreBtn.addEventListener('click', loadMore);
   if(SNAPSHOT && SNAPSHOT.encrypted){
     statsLine.textContent = '内容已加密，请输入口令';
   }else{
@@ -758,7 +705,7 @@ def _make_request_handler(db_path):
                     self._send(400, "application/json; charset=utf-8",
                                b'{"error":"bad query parameters"}')
                     return
-                limit = min(max(limit, 1), 50)
+                limit = min(max(limit, 1), 10000)
 
                 try:
                     posts, total = query_posts(db_path, limit, before_id)
