@@ -50,7 +50,6 @@ jobs:
           python xueqiu_monitor.py
           --once
           --no-web
-          --require-login
           --snapshot-dir site
 
       - name: 持久化抓取数据
