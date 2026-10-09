@@ -203,10 +203,26 @@ class Storage:
                 rec["url"], now, now,
             ))
         else:
-            self.conn.execute("""
-                UPDATE posts SET reply_count=?, retweet_count=?, like_count=?, updated_at=?
-                WHERE id=?
-            """, (rec["reply_count"], rec["retweet_count"], rec["like_count"], now, rec["id"]))
+            # 互动数每次更新；引用内容只在“原先缺失、本次抓到”时补存，
+            # 已保存的引用内容永不覆盖（防止原帖删除/修改后丢失快照）。
+            stored_rt = self.conn.execute(
+                "SELECT COALESCE(rt_text,'') FROM posts WHERE id=?",
+                (rec["id"],)).fetchone()[0]
+            if rec["has_retweet"] and not stored_rt:
+                self.conn.execute("""
+                    UPDATE posts SET reply_count=?, retweet_count=?, like_count=?,
+                        updated_at=?, has_retweet=1, rt_id=?, rt_user_id=?, rt_user=?,
+                        rt_created_at=?, rt_text=?, rt_raw_html=?
+                    WHERE id=?
+                """, (rec["reply_count"], rec["retweet_count"], rec["like_count"], now,
+                      rec["rt_id"], rec["rt_user_id"], rec["rt_user"], rec["rt_created_at"],
+                      rec["rt_text"], rec["rt_raw_html"], rec["id"]))
+            else:
+                self.conn.execute("""
+                    UPDATE posts SET reply_count=?, retweet_count=?, like_count=?, updated_at=?
+                    WHERE id=?
+                """, (rec["reply_count"], rec["retweet_count"], rec["like_count"],
+                      now, rec["id"]))
         self.conn.commit()
         return is_new
 
