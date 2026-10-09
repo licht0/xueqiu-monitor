@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.DS_Store
 data/cookies.json
 data/cookies.json.tmp
 .tools/
