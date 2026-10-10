@@ -523,6 +523,7 @@ main{padding-bottom:40px}
 .card-body a{color:var(--link);text-decoration:none}
 .card-body a:hover{text-decoration:underline}
 .card-body img.emoji{height:1.3em;width:auto;vertical-align:middle;margin:0 1px}
+.card-body img:not(.emoji){max-width:100%;max-height:480px;border-radius:6px;cursor:zoom-in;display:block;margin:8px 0}
 .post-images{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px}
 .post-images img{
   max-width:100%; max-height:520px; width:auto; height:auto;
@@ -538,6 +539,7 @@ main{padding-bottom:40px}
 .quote-body{font-size:13.5px;color:#3c434d;word-break:break-word}
 .quote-body a{color:var(--link);text-decoration:none}
 .quote-body img.emoji{height:1.2em;width:auto;vertical-align:middle}
+.quote-body img:not(.emoji){max-width:100%;max-height:360px;border-radius:5px;cursor:zoom-in;display:block;margin:6px 0}
 .quote-body img.qimg{
   max-width:100%;max-height:400px;border-radius:5px;margin-top:6px;display:block;cursor:zoom-in;
 }
@@ -554,6 +556,34 @@ main{padding-bottom:40px}
   .card{padding:12px 14px}
   .brand small{display:none}
 }
+/* 图片浮层预览 */
+.lightbox{
+  display:none; position:fixed; inset:0; z-index:9999;
+  background:rgba(0,0,0,0.88); align-items:center; justify-content:center;
+  cursor:zoom-out; padding:20px;
+}
+.lightbox.show{display:flex}
+.lightbox img{
+  max-width:100%; max-height:100%; object-fit:contain;
+  border-radius:4px; box-shadow:0 4px 30px rgba(0,0,0,0.5);
+}
+.lightbox .lb-close{
+  position:absolute; top:14px; right:20px; color:#fff; font-size:32px;
+  line-height:1; cursor:pointer; background:none; border:none; opacity:0.8;
+}
+.lightbox .lb-close:hover{opacity:1}
+.lightbox .lb-counter{
+  position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+  color:#fff; font-size:14px; opacity:0.7;
+}
+.lightbox .lb-nav{
+  position:absolute; top:50%; transform:translateY(-50%);
+  color:#fff; font-size:40px; cursor:pointer; background:none; border:none;
+  opacity:0.6; padding:0 16px; user-select:none;
+}
+.lightbox .lb-nav:hover{opacity:1}
+.lightbox .lb-prev{left:10px}
+.lightbox .lb-next{right:10px}
 </style>
 </head>
 <body>
@@ -568,6 +598,13 @@ main{padding-bottom:40px}
   <div id="feed"></div>
   <div class="empty" id="emptyTip" hidden>暂无记录，程序运行后抓到的发言会显示在这里。</div>
 </main>
+<div class="lightbox" id="lightbox">
+  <button class="lb-close" id="lbClose">&times;</button>
+  <button class="lb-nav lb-prev" id="lbPrev">&#8249;</button>
+  <img id="lbImg" src="" alt="">
+  <button class="lb-nav lb-next" id="lbNext">&#8250;</button>
+  <div class="lb-counter" id="lbCounter"></div>
+</div>
 <script id="snapshot-data" type="application/json"></script>
 <script>
 (function(){
@@ -641,6 +678,50 @@ main{padding-bottom:40px}
     return {main: body.trim(), conv: conv};
   }
 
+  // ---- 图片浮层预览 ----
+  var lbImages = [];
+  var lbIndex = 0;
+  function openLightbox(urls, idx){
+    lbImages = urls || [];
+    lbIndex = idx || 0;
+    if(!lbImages.length) return;
+    document.getElementById('lbImg').src = lbImages[lbIndex];
+    document.getElementById('lbCounter').textContent =
+      lbImages.length > 1 ? (lbIndex + 1) + ' / ' + lbImages.length : '';
+    document.getElementById('lightbox').classList.add('show');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeLightbox(){
+    document.getElementById('lightbox').classList.remove('show');
+    document.body.style.overflow = '';
+  }
+  function lbNav(dir){
+    if(!lbImages.length) return;
+    lbIndex = (lbIndex + dir + lbImages.length) % lbImages.length;
+    document.getElementById('lbImg').src = lbImages[lbIndex];
+    document.getElementById('lbCounter').textContent =
+      lbImages.length > 1 ? (lbIndex + 1) + ' / ' + lbImages.length : '';
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    var lb = document.getElementById('lightbox');
+    document.getElementById('lbClose').addEventListener('click', closeLightbox);
+    lb.addEventListener('click', function(e){
+      if(e.target === lb || e.target.tagName === 'IMG') closeLightbox();
+    });
+    document.getElementById('lbPrev').addEventListener('click', function(e){
+      e.stopPropagation(); lbNav(-1);
+    });
+    document.getElementById('lbNext').addEventListener('click', function(e){
+      e.stopPropagation(); lbNav(1);
+    });
+    document.addEventListener('keydown', function(e){
+      if(!lb.classList.contains('show')) return;
+      if(e.key === 'Escape') closeLightbox();
+      else if(e.key === 'ArrowLeft') lbNav(-1);
+      else if(e.key === 'ArrowRight') lbNav(1);
+    });
+  });
+
   function renderImages(picStr, cls){
     if(!picStr) return null;
     var urls = picStr.split(',').map(function(u){
@@ -650,17 +731,30 @@ main{padding-bottom:40px}
     }).filter(function(u){ return u; });
     if(!urls.length) return null;
     var wrap = el('div', cls);
-    urls.forEach(function(u){
+    urls.forEach(function(u, i){
       var img = document.createElement('img');
       img.src = u;
       img.setAttribute('referrerpolicy', 'no-referrer');
       img.setAttribute('loading', 'lazy');
       if(urls.length === 1) img.className = 'single';
-      // 点击在新标签打开原图
-      img.addEventListener('click', function(){ window.open(u, '_blank'); });
+      img.addEventListener('click', function(){ openLightbox(urls, i); });
       wrap.appendChild(img);
     });
     return wrap;
+  }
+
+  // 为 raw_html 中的内嵌图片绑定浮层预览（排除表情图）
+  function bindInlineImages(container){
+    var imgs = container.querySelectorAll('img:not(.emoji)');
+    if(!imgs.length) return;
+    var urls = Array.from(imgs).map(function(i){ return i.src; });
+    imgs.forEach(function(img, i){
+      img.style.cursor = 'zoom-in';
+      img.addEventListener('click', function(e){
+        e.preventDefault();
+        openLightbox(urls, i);
+      });
+    });
   }
 
   function renderCard(p){
@@ -671,6 +765,7 @@ main{padding-bottom:40px}
     var body = el('div', 'card-body');
     if(p.raw_html){
       body.innerHTML = sanitizeHtml(p.raw_html);
+      bindInlineImages(body);
     } else {
       body.textContent = p.text || '(无文字内容)';
     }
@@ -691,6 +786,7 @@ main{padding-bottom:40px}
       var qbody = el('div', 'quote-body');
       if(p.rt_raw_html){
         qbody.innerHTML = sanitizeHtml(p.rt_raw_html);
+        bindInlineImages(qbody);
       } else {
         qbody.textContent = p.rt_text || '(原帖无文字)';
       }
