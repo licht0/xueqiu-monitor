@@ -420,7 +420,7 @@ def build_static_snapshot(db_path, out_dir, password=None):
     返回写入文件的绝对路径。
     """
     posts = query_all_posts(db_path)
-    github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+    github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
     payload = {
         "posts": posts,
         "total": len(posts),

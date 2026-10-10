@@ -48,6 +48,7 @@ jobs:
       - name: 抓取并生成加密静态页
         env:
           SNAPSHOT_PASSWORD: ${{ secrets.SNAPSHOT_PASSWORD }}
+          GH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
         run: >
           python xueqiu_monitor.py
           --once
