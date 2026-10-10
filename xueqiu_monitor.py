@@ -220,17 +220,25 @@ class Storage:
         else:
             # 互动数每次更新；引用内容/图片只在“原先缺失、本次抓到”时补存，
             # 已保存的内容永不覆盖（防止原帖删除/修改后丢失快照）。
+            # 例外：若已存引用内容被截断（末尾 ...），则用本次完整内容替换。
             row = self.conn.execute(
-                "SELECT COALESCE(rt_text,''), COALESCE(rt_pic,''), COALESCE(pic,'') "
-                "FROM posts WHERE id=?", (rec["id"],)).fetchone()
-            stored_rt, stored_rt_pic, stored_pic = row
+                "SELECT COALESCE(text,''), COALESCE(rt_text,''), COALESCE(rt_raw_html,''), "
+                "COALESCE(rt_pic,''), COALESCE(pic,'') FROM posts WHERE id=?",
+                (rec["id"],)).fetchone()
+            stored_text, stored_rt, stored_rt_html, stored_rt_pic, stored_pic = row
+            text_truncated = stored_text.rstrip().endswith("...") and len(stored_text) > 50
+            rt_truncated = stored_rt.rstrip().endswith("...") and len(stored_rt) > 50
             updates = ["reply_count=?", "retweet_count=?", "like_count=?", "updated_at=?"]
             vals = [rec["reply_count"], rec["retweet_count"], rec["like_count"], now]
-            if rec["has_retweet"] and not stored_rt:
-                updates += ["has_retweet=1", "rt_id=?", "rt_user_id=?", "rt_user=?",
-                            "rt_created_at=?", "rt_text=?", "rt_raw_html=?"]
-                vals += [rec["rt_id"], rec["rt_user_id"], rec["rt_user"],
-                         rec["rt_created_at"], rec["rt_text"], rec["rt_raw_html"]]
+            if text_truncated and rec["text"]:
+                updates += ["text=?", "raw_html=?"]
+                vals += [rec["text"], rec["raw_html"]]
+            if rec["has_retweet"]:
+                if not stored_rt or rt_truncated:
+                    updates += ["has_retweet=1", "rt_id=?", "rt_user_id=?", "rt_user=?",
+                                "rt_created_at=?", "rt_text=?", "rt_raw_html=?"]
+                    vals += [rec["rt_id"], rec["rt_user_id"], rec["rt_user"],
+                             rec["rt_created_at"], rec["rt_text"], rec["rt_raw_html"]]
             if rt_pic and not stored_rt_pic:
                 updates.append("rt_pic=?")
                 vals.append(rt_pic)
@@ -1284,35 +1292,38 @@ class XueqiuClient:
 # --------------------------------------------------------------------------- #
 
 def parse_status(status, user_id):
-    """把 API 的 status 对象解析为存储记录"""
+    """把 API 的 status 对象解析为存储记录。
+    注意：雪球时间线接口的 description 字段会截断长帖，而 text 字段保留全文，
+    因此正文/引用均优先使用 text，仅在缺失时回退到 description。"""
     rt = status.get("retweeted_status") or None
     rt_rec = None
     if rt and rt.get("id"):
         rt_user = rt.get("user") or {}
+        rt_html = rt.get("text") or rt.get("description") or ""
         rt_pic = _normalize_pic(rt.get("pic") or rt.get("firstImg") or "")
         rt_rec = {
             "rt_id": rt.get("id"),
             "rt_user_id": rt.get("user_id"),
             "rt_user": rt_user.get("screen_name", ""),
             "rt_created_at": rt.get("created_at"),
-            "rt_text": html_to_text(rt.get("description", "")),
-            "rt_raw_html": rt.get("description", ""),
+            "rt_text": html_to_text(rt_html),
+            "rt_raw_html": rt_html,
             "rt_pic": rt_pic,
-            "rt_truncated": bool(rt.get("truncated")),
         }
 
     reply_count = status.get("reply_count")
     if reply_count is None:
         reply_count = status.get("comment_count", 0) or 0
 
+    main_html = status.get("text") or status.get("description") or ""
     rec = {
         "id": status.get("id"),
         "user_id": status.get("user_id", user_id),
         "created_at": status.get("created_at"),
         "source": status.get("source", ""),
         "title": status.get("title", "") or "",
-        "text": html_to_text(status.get("description", "")),
-        "raw_html": status.get("description", ""),
+        "text": html_to_text(main_html),
+        "raw_html": main_html,
         "pic": _normalize_pic(status.get("pic") or status.get("firstImg") or ""),
         "has_retweet": rt_rec is not None,
         "rt_id": None,
@@ -1339,6 +1350,41 @@ def _normalize_pic(pic_str):
     urls = [u.strip() for u in str(pic_str).split(",") if u.strip()]
     # 去掉缩略图尺寸后缀之外的脏数据
     return ",".join(urls)
+
+
+def _is_truncated(text):
+    """判断文本是否被接口截断（末尾 ... 且长度超过阈值）"""
+    if not text:
+        return False
+    t = text.rstrip()
+    return t.endswith("...") and len(t) > 60
+
+
+def _enrich_with_detail(client, rec):
+    """若正文或引用内容被截断，拉取单帖详情补全全文。
+    雪球时间线的 text 字段对超长帖仍会截断，需通过 show.json 获取全文。"""
+    # 正文
+    if _is_truncated(rec.get("text")):
+        detail = client.fetch_status_detail(rec["id"])
+        if detail:
+            full = detail.get("text") or detail.get("description") or ""
+            if full and not _is_truncated(full):
+                rec["text"] = html_to_text(full)
+                rec["raw_html"] = full
+                pic = _normalize_pic(detail.get("pic") or detail.get("firstImg") or "")
+                if pic and not rec.get("pic"):
+                    rec["pic"] = pic
+    # 引用
+    if rec.get("has_retweet") and _is_truncated(rec.get("rt_text")):
+        detail = client.fetch_status_detail(rec["rt_id"])
+        if detail:
+            full = detail.get("text") or detail.get("description") or ""
+            if full and not _is_truncated(full) and "删除" not in full:
+                rec["rt_text"] = html_to_text(full)
+                rec["rt_raw_html"] = full
+                pic = _normalize_pic(detail.get("pic") or detail.get("firstImg") or "")
+                if pic and not rec.get("rt_pic"):
+                    rec["rt_pic"] = pic
 
 
 def format_post(rec):
@@ -1439,15 +1485,7 @@ def crawl_full_history(client, storage, user_id, data_dir, max_pages=1000,
         page_new = 0
         for st in statuses:
             rec = parse_status(st, user_id)
-            # 引用帖内容被截断时，拉取单帖全文补全（避免长引用显示不全）
-            if rec.get("has_retweet") and rec.get("rt_truncated"):
-                detail = client.fetch_status_detail(rec["rt_id"])
-                if detail and not detail.get("truncated"):
-                    rt_user = (detail.get("user") or {})
-                    rec["rt_text"] = html_to_text(detail.get("description", ""))
-                    rec["rt_raw_html"] = detail.get("description", "")
-                    rec["rt_pic"] = _normalize_pic(
-                        detail.get("pic") or detail.get("firstImg") or "")
+            _enrich_with_detail(client, rec)
             if storage.upsert(rec):
                 page_new += 1
                 new_total += 1
@@ -1612,13 +1650,7 @@ def run(args):
                 break
             for st in statuses:
                 rec = parse_status(st, args.user_id)
-                if rec.get("has_retweet") and rec.get("rt_truncated"):
-                    detail = client.fetch_status_detail(rec["rt_id"])
-                    if detail and not detail.get("truncated"):
-                        rec["rt_text"] = html_to_text(detail.get("description", ""))
-                        rec["rt_raw_html"] = detail.get("description", "")
-                        rec["rt_pic"] = _normalize_pic(
-                            detail.get("pic") or detail.get("firstImg") or "")
+                _enrich_with_detail(client, rec)
                 is_new = storage.upsert(rec)
                 if is_new:
                     new_count += 1
