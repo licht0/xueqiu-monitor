@@ -420,11 +420,14 @@ def build_static_snapshot(db_path, out_dir, password=None):
     返回写入文件的绝对路径。
     """
     posts = query_all_posts(db_path)
+    github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     payload = {
         "posts": posts,
         "total": len(posts),
         "synced_at": ts_to_str(int(time.time() * 1000)),
         "repo": "licht0/xueqiu-monitor",
+        "workflow": "xueqiu.yml",
+        "github_token": github_token,
     }
     embedded_payload = encrypt_snapshot_payload(payload, password) if password else payload
     data_json = json.dumps(embedded_payload, ensure_ascii=False)
@@ -834,17 +837,12 @@ main{padding-bottom:40px}
   // ---- 虚拟滚动：只渲染可视区域帖子，避免 11k+ DOM 卡顿 ----
   var allPosts = [];
   var CARD_EST = 180; // 预估卡片高度（px）
-  var BUFFER = 8;     // 可视区外预渲染数量
+  var BUFFER = 6;     // 可视区外预渲染数量
   var cardHeights = []; // 记录已渲染卡片的真实高度
   var scrollTicking = false;
 
   function getCardHeight(i){
     return cardHeights[i] || CARD_EST;
-  }
-  function totalHeight(){
-    var h = 0;
-    for(var i = 0; i < allPosts.length; i++) h += getCardHeight(i);
-    return h;
   }
   function indexAtScrollTop(scrollTop){
     var acc = 0;
@@ -863,33 +861,36 @@ main{padding-bottom:40px}
     renderVisible._lastStart = start;
     renderVisible._lastEnd = end;
 
-    // 构建顶部占位高度
+    // 顶部占位：start 之前所有卡片高度之和
     var topPad = 0;
     for(var i = 0; i < start; i++) topPad += getCardHeight(i);
+    // 底部占位：end 之后所有卡片高度之和
+    var bottomPad = 0;
+    for(var k = end; k < allPosts.length; k++) bottomPad += getCardHeight(k);
 
-    var frag = document.createDocumentFragment();
+    feed.textContent = '';
+    var topSpacer = document.createElement('div');
+    topSpacer.style.height = topPad + 'px';
+    feed.appendChild(topSpacer);
+
     for(var j = start; j < end; j++){
       var node = renderCard(allPosts[j]);
-      node.style.position = 'absolute';
-      node.style.top = topPad + 'px';
-      node.style.left = '0';
-      node.style.right = '0';
-      frag.appendChild(node);
-      // 测量真实高度
+      feed.appendChild(node);
+      // 测量真实高度，更新缓存
       (function(idx, el){
         requestAnimationFrame(function(){
           var h = el.offsetHeight;
           if(h && cardHeights[idx] !== h){
             cardHeights[idx] = h;
-            // 高度变化时需要重排，但不立即重渲染避免循环
             renderVisible._needsUpdate = true;
           }
         });
       })(j, node);
     }
-    feed.textContent = '';
-    feed.style.position = 'relative';
-    feed.appendChild(frag);
+
+    var bottomSpacer = document.createElement('div');
+    bottomSpacer.style.height = bottomPad + 'px';
+    feed.appendChild(bottomSpacer);
   }
   function onScroll(){
     if(scrollTicking) return;
@@ -899,22 +900,19 @@ main{padding-bottom:40px}
       scrollTicking = false;
     });
   }
-  // 高度测量后按需重排（防抖，避免每帧重渲染）
+  // 高度测量后按需重排
   setInterval(function(){
     if(renderVisible._needsUpdate){
       renderVisible._needsUpdate = false;
-      feed.style.height = totalHeight() + 'px';
       renderVisible._lastStart = -1;
       renderVisible();
     }
-  }, 500);
+  }, 400);
 
   function renderList(posts, append){
     if(!append){
       allPosts = posts.slice();
       cardHeights = new Array(posts.length);
-      feed.textContent = '';
-      feed.style.height = totalHeight() + 'px';
       renderVisible._lastStart = -1;
       renderVisible();
       window.addEventListener('scroll', onScroll, {passive:true});
@@ -922,7 +920,6 @@ main{padding-bottom:40px}
     }else{
       allPosts = allPosts.concat(posts);
       cardHeights = cardHeights.concat(new Array(posts.length));
-      feed.style.height = totalHeight() + 'px';
       renderVisible._lastStart = -1;
       renderVisible();
     }
@@ -976,7 +973,6 @@ main{padding-bottom:40px}
           allPosts = fresh.concat(allPosts);
           cardHeights = new Array(fresh.length).concat(cardHeights);
           newestId = fresh[fresh.length - 1].id;
-          feed.style.height = totalHeight() + 'px';
           renderVisible._lastStart = -1;
           renderVisible();
           banner.classList.remove('show');
@@ -1035,14 +1031,75 @@ main{padding-bottom:40px}
   }
   window.__xqDecrypt = decryptSnapshot;
 
-  // ---- 手动触发抓取（打开 GitHub Actions 页面，无需在页面存放 token）----
+  // ---- 手动触发抓取：直接调用 GitHub API，完成后刷新页面 ----
   var refreshBtn = document.getElementById('refreshBtn');
+  function triggerFetch(){
+    if(!SNAPSHOT || !SNAPSHOT.github_token){
+      window.open('https://github.com/' + SNAPSHOT.repo + '/actions/workflows/' + SNAPSHOT.workflow, '_blank');
+      return;
+    }
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = '抓取中…';
+    fetch('https://api.github.com/repos/' + SNAPSHOT.repo +
+          '/actions/workflows/' + SNAPSHOT.workflow + '/dispatches', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + SNAPSHOT.github_token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ref: 'main' })
+    }).then(function(r){
+      if(r.status === 204){
+        refreshBtn.textContent = '已触发，等待完成…';
+        // 轮询最新一次运行结果，成功后刷新页面
+        pollLatestRun();
+      }else{
+        refreshBtn.textContent = '触发失败(' + r.status + ')';
+        refreshBtn.disabled = false;
+        setTimeout(function(){ refreshBtn.textContent = '抓取最新'; }, 2000);
+      }
+    }).catch(function(){
+      refreshBtn.textContent = '网络错误';
+      refreshBtn.disabled = false;
+      setTimeout(function(){ refreshBtn.textContent = '抓取最新'; }, 2000);
+    });
+  }
+  function pollLatestRun(){
+    var attempts = 0;
+    var maxAttempts = 60; // 最多等 2 分钟
+    var poll = setInterval(function(){
+      attempts++;
+      fetch('https://api.github.com/repos/' + SNAPSHOT.repo +
+            '/actions/runs?per_page=1', {
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': 'Bearer ' + SNAPSHOT.github_token
+        }
+      }).then(function(r){ return r.json(); }).then(function(d){
+        var run = d.workflow_runs && d.workflow_runs[0];
+        if(run && run.status === 'completed'){
+          clearInterval(poll);
+          if(run.conclusion === 'success'){
+            refreshBtn.textContent = '完成，刷新页面…';
+            setTimeout(function(){ location.reload(); }, 800);
+          }else{
+            refreshBtn.textContent = '运行失败';
+            refreshBtn.disabled = false;
+            setTimeout(function(){ refreshBtn.textContent = '抓取最新'; }, 2000);
+          }
+        }else if(attempts >= maxAttempts){
+          clearInterval(poll);
+          refreshBtn.textContent = '超时，稍后刷新';
+          refreshBtn.disabled = false;
+          setTimeout(function(){ refreshBtn.textContent = '抓取最新'; }, 2000);
+        }
+      }).catch(function(){});
+    }, 2000);
+  }
   function setupRefresh(){
     refreshBtn.hidden = false;
-    refreshBtn.addEventListener('click', function(){
-      window.open('https://github.com/' + (SNAPSHOT ? SNAPSHOT.repo : 'licht0/xueqiu-monitor') +
-                  '/actions/workflows/xueqiu.yml', '_blank');
-    });
+    refreshBtn.addEventListener('click', triggerFetch);
   }
 
   if(SNAPSHOT && SNAPSHOT.encrypted){
