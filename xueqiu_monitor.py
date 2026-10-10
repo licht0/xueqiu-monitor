@@ -424,6 +424,7 @@ def build_static_snapshot(db_path, out_dir, password=None):
         "posts": posts,
         "total": len(posts),
         "synced_at": ts_to_str(int(time.time() * 1000)),
+        "repo": "licht0/xueqiu-monitor",
     }
     embedded_payload = encrypt_snapshot_payload(payload, password) if password else payload
     data_json = json.dumps(embedded_payload, ensure_ascii=False)
@@ -584,13 +585,24 @@ main{padding-bottom:40px}
 .lightbox .lb-nav:hover{opacity:1}
 .lightbox .lb-prev{left:10px}
 .lightbox .lb-next{right:10px}
+.topbar-actions{display:flex;align-items:center;gap:10px}
+.refresh-btn{
+  background:var(--primary); color:#fff; border:none; border-radius:6px;
+  padding:6px 14px; font-size:13px; cursor:pointer; white-space:nowrap;
+  transition:opacity 0.2s;
+}
+.refresh-btn:hover{opacity:0.85}
+.refresh-btn:disabled{opacity:0.5;cursor:not-allowed}
 </style>
 </head>
 <body>
 <header class="topbar">
   <div class="wrap">
     <div class="brand"><span class="dot">●</span>雪球发言监控<small>大道无形我有型 · 段永平</small></div>
-    <div class="stats-line" id="statsLine">正在加载…</div>
+    <div class="topbar-actions">
+      <div class="stats-line" id="statsLine">正在加载…</div>
+      <button class="refresh-btn" id="refreshBtn" hidden>抓取最新</button>
+    </div>
   </div>
 </header>
 <div class="banner" id="newBanner"></div>
@@ -927,8 +939,19 @@ main{padding-bottom:40px}
     total = decrypted.total;
     applyInitialPage(decrypted.posts || []);
     document.getElementById('gate').style.display = 'none';
+    setupRefresh();
   }
   window.__xqDecrypt = decryptSnapshot;
+
+  // ---- 手动触发抓取（打开 GitHub Actions 页面，无需在页面存放 token）----
+  var refreshBtn = document.getElementById('refreshBtn');
+  function setupRefresh(){
+    refreshBtn.hidden = false;
+    refreshBtn.addEventListener('click', function(){
+      window.open('https://github.com/' + (SNAPSHOT ? SNAPSHOT.repo : 'licht0/xueqiu-monitor') +
+                  '/actions/workflows/xueqiu.yml', '_blank');
+    });
+  }
 
   if(SNAPSHOT && SNAPSHOT.encrypted){
     statsLine.textContent = '内容已加密，请输入口令';
@@ -936,6 +959,7 @@ main{padding-bottom:40px}
     loadInitial().catch(function(){
       statsLine.textContent = '数据加载失败，请确认程序正在运行';
     });
+    setupRefresh();
     if(!SNAPSHOT) setInterval(checkNew, 60000);
   }
 })();
