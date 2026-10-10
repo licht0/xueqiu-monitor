@@ -65,10 +65,12 @@ def log(msg):
 
 
 def ts_to_str(ms):
-    """毫秒时间戳 -> 本地时间字符串"""
+    """毫秒时间戳 -> 北京时间字符串（固定 UTC+8，不依赖运行环境时区）"""
     if not ms:
         return ""
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ms / 1000.0))
+    from datetime import datetime, timezone, timedelta
+    bj = timezone(timedelta(hours=8))
+    return datetime.fromtimestamp(ms / 1000.0, tz=bj).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def decode_jwt_payload(token):
@@ -421,7 +423,7 @@ def build_static_snapshot(db_path, out_dir, password=None):
     payload = {
         "posts": posts,
         "total": len(posts),
-        "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "synced_at": ts_to_str(int(time.time() * 1000)),
     }
     embedded_payload = encrypt_snapshot_payload(payload, password) if password else payload
     data_json = json.dumps(embedded_payload, ensure_ascii=False)
