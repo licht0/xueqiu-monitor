@@ -524,8 +524,11 @@ main{padding-bottom:40px}
 .card-body a:hover{text-decoration:underline}
 .card-body img.emoji{height:1.3em;width:auto;vertical-align:middle;margin:0 1px}
 .post-images{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px}
-.post-images img{max-width:100%;max-height:320px;border-radius:6px;display:block}
-.post-images img.single{max-width:100%;max-height:480px}
+.post-images img{
+  max-width:100%; max-height:520px; width:auto; height:auto;
+  border-radius:6px; display:block; cursor:zoom-in;
+}
+.post-images img.single{max-width:100%;max-height:640px}
 .quote{
   margin-top:10px; background:#f7f8f9; border:1px solid var(--line);
   border-left:3px solid var(--primary); border-radius:6px; padding:10px 12px;
@@ -535,7 +538,9 @@ main{padding-bottom:40px}
 .quote-body{font-size:13.5px;color:#3c434d;word-break:break-word}
 .quote-body a{color:var(--link);text-decoration:none}
 .quote-body img.emoji{height:1.2em;width:auto;vertical-align:middle}
-.quote-body img.qimg{max-width:100%;max-height:260px;border-radius:5px;margin-top:6px;display:block}
+.quote-body img.qimg{
+  max-width:100%;max-height:400px;border-radius:5px;margin-top:6px;display:block;cursor:zoom-in;
+}
 .conv{
   margin-top:10px; border-left:2px solid var(--line);
   padding-left:10px; color:#5a6069; font-size:13px;
@@ -598,6 +603,7 @@ main{padding-bottom:40px}
       var src = img.getAttribute('src') || '';
       if(src.indexOf('//') === 0) src = 'https:' + src;
       else if(src.indexOf('/') === 0) src = 'https://xueqiu.com' + src;
+      src = src.replace(/!thumb\.[a-z]+$/i, '');
       img.setAttribute('src', src);
       img.setAttribute('referrerpolicy', 'no-referrer');
       var s = src.toLowerCase();
@@ -637,7 +643,11 @@ main{padding-bottom:40px}
 
   function renderImages(picStr, cls){
     if(!picStr) return null;
-    var urls = picStr.split(',').filter(function(u){ return u.trim(); });
+    var urls = picStr.split(',').map(function(u){
+      u = u.trim();
+      // 雪球缩略图 URL 带 !thumb.jpg 后缀，去掉获取原图
+      return u.replace(/!thumb\.[a-z]+$/i, '');
+    }).filter(function(u){ return u; });
     if(!urls.length) return null;
     var wrap = el('div', cls);
     urls.forEach(function(u){
@@ -646,6 +656,8 @@ main{padding-bottom:40px}
       img.setAttribute('referrerpolicy', 'no-referrer');
       img.setAttribute('loading', 'lazy');
       if(urls.length === 1) img.className = 'single';
+      // 点击在新标签打开原图
+      img.addEventListener('click', function(){ window.open(u, '_blank'); });
       wrap.appendChild(img);
     });
     return wrap;
