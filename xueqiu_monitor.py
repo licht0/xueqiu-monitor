@@ -386,7 +386,7 @@ def b64e(raw):
 def encrypt_snapshot_payload(payload, password):
     """用口令加密快照，返回可公开内嵌的元数据与密文。"""
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    iterations = 250000
+    iterations = 100000
     salt = os.urandom(16)
     iv = os.urandom(16)
     derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
@@ -831,12 +831,100 @@ main{padding-bottom:40px}
     return c;
   }
 
+  // ---- 虚拟滚动：只渲染可视区域帖子，避免 11k+ DOM 卡顿 ----
+  var allPosts = [];
+  var CARD_EST = 180; // 预估卡片高度（px）
+  var BUFFER = 8;     // 可视区外预渲染数量
+  var cardHeights = []; // 记录已渲染卡片的真实高度
+  var scrollTicking = false;
+
+  function getCardHeight(i){
+    return cardHeights[i] || CARD_EST;
+  }
+  function totalHeight(){
+    var h = 0;
+    for(var i = 0; i < allPosts.length; i++) h += getCardHeight(i);
+    return h;
+  }
+  function indexAtScrollTop(scrollTop){
+    var acc = 0;
+    for(var i = 0; i < allPosts.length; i++){
+      acc += getCardHeight(i);
+      if(acc > scrollTop) return i;
+    }
+    return allPosts.length;
+  }
+  function renderVisible(){
+    var scrollTop = window.scrollY || document.documentElement.scrollTop;
+    var viewH = window.innerHeight;
+    var start = Math.max(0, indexAtScrollTop(scrollTop) - BUFFER);
+    var end = Math.min(allPosts.length, indexAtScrollTop(scrollTop + viewH) + BUFFER);
+    if(start === renderVisible._lastStart && end === renderVisible._lastEnd) return;
+    renderVisible._lastStart = start;
+    renderVisible._lastEnd = end;
+
+    // 构建顶部占位高度
+    var topPad = 0;
+    for(var i = 0; i < start; i++) topPad += getCardHeight(i);
+
+    var frag = document.createDocumentFragment();
+    for(var j = start; j < end; j++){
+      var node = renderCard(allPosts[j]);
+      node.style.position = 'absolute';
+      node.style.top = topPad + 'px';
+      node.style.left = '0';
+      node.style.right = '0';
+      frag.appendChild(node);
+      // 测量真实高度
+      (function(idx, el){
+        requestAnimationFrame(function(){
+          var h = el.offsetHeight;
+          if(h && cardHeights[idx] !== h){
+            cardHeights[idx] = h;
+            // 高度变化时需要重排，但不立即重渲染避免循环
+            renderVisible._needsUpdate = true;
+          }
+        });
+      })(j, node);
+    }
+    feed.textContent = '';
+    feed.style.position = 'relative';
+    feed.appendChild(frag);
+  }
+  function onScroll(){
+    if(scrollTicking) return;
+    scrollTicking = true;
+    requestAnimationFrame(function(){
+      renderVisible();
+      scrollTicking = false;
+    });
+  }
+  // 高度测量后按需重排（防抖，避免每帧重渲染）
+  setInterval(function(){
+    if(renderVisible._needsUpdate){
+      renderVisible._needsUpdate = false;
+      feed.style.height = totalHeight() + 'px';
+      renderVisible._lastStart = -1;
+      renderVisible();
+    }
+  }, 500);
+
   function renderList(posts, append){
-    if(append){
-      posts.forEach(function(p){ feed.appendChild(renderCard(p)); });
-    }else{
+    if(!append){
+      allPosts = posts.slice();
+      cardHeights = new Array(posts.length);
       feed.textContent = '';
-      posts.forEach(function(p){ feed.appendChild(renderCard(p)); });
+      feed.style.height = totalHeight() + 'px';
+      renderVisible._lastStart = -1;
+      renderVisible();
+      window.addEventListener('scroll', onScroll, {passive:true});
+      window.addEventListener('resize', onScroll);
+    }else{
+      allPosts = allPosts.concat(posts);
+      cardHeights = cardHeights.concat(new Array(posts.length));
+      feed.style.height = totalHeight() + 'px';
+      renderVisible._lastStart = -1;
+      renderVisible();
     }
   }
 
@@ -885,8 +973,12 @@ main{padding-bottom:40px}
         banner.textContent = '有 ' + fresh.length + ' 条新发言，点击查看';
         banner.onclick = function(){
           fresh.sort(function(a,b){ return a.created_at - b.created_at; });
-          fresh.forEach(function(p){ feed.insertBefore(renderCard(p), feed.firstChild); });
+          allPosts = fresh.concat(allPosts);
+          cardHeights = new Array(fresh.length).concat(cardHeights);
           newestId = fresh[fresh.length - 1].id;
+          feed.style.height = totalHeight() + 'px';
+          renderVisible._lastStart = -1;
+          renderVisible();
           banner.classList.remove('show');
           window.scrollTo({top:0, behavior:'smooth'});
         };
