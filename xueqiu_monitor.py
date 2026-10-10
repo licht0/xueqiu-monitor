@@ -151,6 +151,7 @@ class Storage:
         title          TEXT,
         text           TEXT,
         raw_html       TEXT,
+        pic            TEXT,
         has_retweet    INTEGER,
         rt_id          INTEGER,
         rt_user_id     INTEGER,
@@ -158,6 +159,7 @@ class Storage:
         rt_created_at  INTEGER,
         rt_text        TEXT,
         rt_raw_html    TEXT,
+        rt_pic         TEXT,
         reply_count    INTEGER,
         retweet_count  INTEGER,
         like_count     INTEGER,
@@ -168,11 +170,22 @@ class Storage:
     CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);
     """
 
+    _MIGRATIONS = (
+        "ALTER TABLE posts ADD COLUMN pic TEXT",
+        "ALTER TABLE posts ADD COLUMN rt_pic TEXT",
+    )
+
     def __init__(self, db_path, jsonl_path):
         self.db_path = db_path
         self.jsonl_path = jsonl_path
         self.conn = sqlite3.connect(db_path)
         self.conn.executescript(self.SCHEMA)
+        # 旧库迁移：新增字段
+        for stmt in self._MIGRATIONS:
+            try:
+                self.conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def exists(self, post_id):
@@ -186,43 +199,47 @@ class Storage:
         """
         now = int(time.time() * 1000)
         is_new = not self.exists(rec["id"])
+        pic = rec.get("pic", "") or ""
+        rt_pic = rec.get("rt_pic", "") or ""
         if is_new:
             self.conn.execute("""
                 INSERT INTO posts (id, user_id, created_at, source, title, text, raw_html,
-                                   has_retweet, rt_id, rt_user_id, rt_user, rt_created_at,
-                                   rt_text, rt_raw_html, reply_count, retweet_count,
+                                   pic, has_retweet, rt_id, rt_user_id, rt_user, rt_created_at,
+                                   rt_text, rt_raw_html, rt_pic, reply_count, retweet_count,
                                    like_count, url, first_seen, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 rec["id"], rec["user_id"], rec["created_at"], rec["source"],
-                rec["title"], rec["text"], rec["raw_html"],
+                rec["title"], rec["text"], rec["raw_html"], pic,
                 1 if rec["has_retweet"] else 0,
                 rec["rt_id"], rec["rt_user_id"], rec["rt_user"], rec["rt_created_at"],
-                rec["rt_text"], rec["rt_raw_html"],
+                rec["rt_text"], rec["rt_raw_html"], rt_pic,
                 rec["reply_count"], rec["retweet_count"], rec["like_count"],
                 rec["url"], now, now,
             ))
         else:
-            # 互动数每次更新；引用内容只在“原先缺失、本次抓到”时补存，
-            # 已保存的引用内容永不覆盖（防止原帖删除/修改后丢失快照）。
-            stored_rt = self.conn.execute(
-                "SELECT COALESCE(rt_text,'') FROM posts WHERE id=?",
-                (rec["id"],)).fetchone()[0]
+            # 互动数每次更新；引用内容/图片只在“原先缺失、本次抓到”时补存，
+            # 已保存的内容永不覆盖（防止原帖删除/修改后丢失快照）。
+            row = self.conn.execute(
+                "SELECT COALESCE(rt_text,''), COALESCE(rt_pic,''), COALESCE(pic,'') "
+                "FROM posts WHERE id=?", (rec["id"],)).fetchone()
+            stored_rt, stored_rt_pic, stored_pic = row
+            updates = ["reply_count=?", "retweet_count=?", "like_count=?", "updated_at=?"]
+            vals = [rec["reply_count"], rec["retweet_count"], rec["like_count"], now]
             if rec["has_retweet"] and not stored_rt:
-                self.conn.execute("""
-                    UPDATE posts SET reply_count=?, retweet_count=?, like_count=?,
-                        updated_at=?, has_retweet=1, rt_id=?, rt_user_id=?, rt_user=?,
-                        rt_created_at=?, rt_text=?, rt_raw_html=?
-                    WHERE id=?
-                """, (rec["reply_count"], rec["retweet_count"], rec["like_count"], now,
-                      rec["rt_id"], rec["rt_user_id"], rec["rt_user"], rec["rt_created_at"],
-                      rec["rt_text"], rec["rt_raw_html"], rec["id"]))
-            else:
-                self.conn.execute("""
-                    UPDATE posts SET reply_count=?, retweet_count=?, like_count=?, updated_at=?
-                    WHERE id=?
-                """, (rec["reply_count"], rec["retweet_count"], rec["like_count"],
-                      now, rec["id"]))
+                updates += ["has_retweet=1", "rt_id=?", "rt_user_id=?", "rt_user=?",
+                            "rt_created_at=?", "rt_text=?", "rt_raw_html=?"]
+                vals += [rec["rt_id"], rec["rt_user_id"], rec["rt_user"],
+                         rec["rt_created_at"], rec["rt_text"], rec["rt_raw_html"]]
+            if rt_pic and not stored_rt_pic:
+                updates.append("rt_pic=?")
+                vals.append(rt_pic)
+            if pic and not stored_pic:
+                updates.append("pic=?")
+                vals.append(pic)
+            vals.append(rec["id"])
+            self.conn.execute(
+                "UPDATE posts SET %s WHERE id=?" % ", ".join(updates), vals)
         self.conn.commit()
         return is_new
 
@@ -243,7 +260,7 @@ class Storage:
 # --------------------------------------------------------------------------- #
 
 # 不暴露给网页的字段（原始 HTML 体积大且页面不需要）
-_WEB_HIDDEN_COLS = ("raw_html", "rt_raw_html", "first_seen", "updated_at")
+_WEB_HIDDEN_COLS = ("first_seen", "updated_at")
 
 
 def query_posts(db_path, limit=20, before_id=None):
@@ -447,12 +464,12 @@ html{-webkit-text-size-adjust:100%}
 body{
   margin:0; background:var(--bg); color:var(--ink);
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
-  line-height:1.65;
+  line-height:1.7;
 }
-.wrap{max-width:760px;margin:0 auto;padding:0 16px}
+.wrap{max-width:720px;margin:0 auto;padding:0 16px}
 header.topbar{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
-header.topbar .wrap{display:flex;justify-content:space-between;align-items:center;min-height:58px;gap:12px}
-.brand{font-weight:600;font-size:16px;white-space:nowrap}
+header.topbar .wrap{display:flex;justify-content:space-between;align-items:center;min-height:52px;gap:12px}
+.brand{font-weight:600;font-size:15px;white-space:nowrap}
 .brand .dot{color:var(--primary);margin-right:2px}
 .brand small{color:var(--sub);font-weight:400;font-size:12px;margin-left:6px}
 .stats-line{color:var(--sub);font-size:12.5px;text-align:right}
@@ -462,33 +479,40 @@ header.topbar .wrap{display:flex;justify-content:space-between;align-items:cente
 }
 .banner:hover{background:#0d7a5f}
 .banner.show{display:block}
-main{padding-bottom:48px}
+main{padding-bottom:40px}
 .card{
-  background:#fff; border:1px solid var(--line); border-radius:12px;
-  padding:18px 20px; margin:16px 0;
+  background:#fff; border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px; margin:10px 0;
 }
-.card-time{color:var(--sub);font-size:13px;margin-bottom:8px}
-.card-title{font-size:17px;font-weight:600;margin:0 0 8px}
-.card-text{white-space:pre-wrap;word-break:break-word;font-size:15px}
+.card-time{color:var(--sub);font-size:12.5px;margin-bottom:8px}
+.card-body{font-size:14.5px;word-break:break-word}
+.card-body a{color:var(--link);text-decoration:none}
+.card-body a:hover{text-decoration:underline}
+.card-body img.emoji{height:1.3em;width:auto;vertical-align:middle;margin:0 1px}
+.post-images{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px}
+.post-images img{max-width:100%;max-height:320px;border-radius:6px;display:block}
+.post-images img.single{max-width:100%;max-height:480px}
 .quote{
-  margin-top:14px; background:#fafbfc; border:1px solid var(--line);
-  border-left:3px solid var(--primary); border-radius:8px; padding:12px 14px;
+  margin-top:10px; background:#f7f8f9; border:1px solid var(--line);
+  border-left:3px solid var(--primary); border-radius:6px; padding:10px 12px;
 }
-.quote-head{color:var(--sub);font-size:13px;margin-bottom:6px}
+.quote-head{color:var(--sub);font-size:12.5px;margin-bottom:6px}
 .quote-head b{color:var(--ink);font-weight:600}
-.quote-text{white-space:pre-wrap;word-break:break-word;font-size:14px;color:#3c434d}
-a.qu-link{display:inline-block;margin-top:8px;color:var(--link);font-size:13px;text-decoration:none}
-a.qu-link:hover{text-decoration:underline}
-.card-foot{
-  margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
-  display:flex; justify-content:space-between; align-items:center;
-  color:var(--sub); font-size:13px; gap:8px; flex-wrap:wrap;
+.quote-body{font-size:13.5px;color:#3c434d;word-break:break-word}
+.quote-body a{color:var(--link);text-decoration:none}
+.quote-body img.emoji{height:1.2em;width:auto;vertical-align:middle}
+.quote-body img.qimg{max-width:100%;max-height:260px;border-radius:5px;margin-top:6px;display:block}
+.conv{
+  margin-top:10px; border-left:2px solid var(--line);
+  padding-left:10px; color:#5a6069; font-size:13px;
 }
-.card-foot a{color:var(--link);text-decoration:none;white-space:nowrap}
-.card-foot a:hover{text-decoration:underline}
+.conv .conv-item{margin:4px 0}
+.conv .conv-user{color:var(--primary);font-weight:600}
+.card-link{display:inline-block;margin-top:10px;color:var(--sub);font-size:12.5px;text-decoration:none}
+.card-link:hover{color:var(--link);text-decoration:underline}
 .empty{text-align:center;color:var(--sub);padding:80px 0;font-size:14px}
 @media (max-width:520px){
-  .card{padding:15px 16px}
+  .card{padding:12px 14px}
   .brand small{display:none}
 }
 </style>
@@ -531,34 +555,125 @@ a.qu-link:hover{text-decoration:underline}
     return a;
   }
 
+  // 雪球 HTML 净化：移除脚本，补全协议相对 URL，标记表情图
+  function sanitizeHtml(raw){
+    if(!raw) return '';
+    var doc = new DOMParser().parseFromString(raw, 'text/html');
+    doc.querySelectorAll('script, style, iframe').forEach(function(n){ n.remove(); });
+    doc.querySelectorAll('img').forEach(function(img){
+      var src = img.getAttribute('src') || '';
+      if(src.indexOf('//') === 0) src = 'https:' + src;
+      else if(src.indexOf('/') === 0) src = 'https://xueqiu.com' + src;
+      img.setAttribute('src', src);
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      var s = src.toLowerCase();
+      if(s.indexOf('face/emoji') !== -1 || s.indexOf('assets.imedao.com/ugc/images') !== -1){
+        img.className = 'emoji';
+      }
+      img.removeAttribute('onerror'); img.removeAttribute('onload');
+    });
+    doc.querySelectorAll('a').forEach(function(a){
+      var href = a.getAttribute('href') || '';
+      if(href.indexOf('//') === 0) href = 'https:' + href;
+      a.setAttribute('href', href);
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+    });
+    return doc.body.innerHTML;
+  }
+
+  // 将 text 中的 "//@用户: 内容" 对话链拆分为独立上下文块
+  function splitConversation(text){
+    if(!text) return {main: '', conv: []};
+    // 匹配 "回复 @用户: " 开头（直接回复）
+    var replyMatch = text.match(/^回复\s*@([^:：]+)[:：]\s*/);
+    var main = text;
+    if(replyMatch){
+      main = text.slice(replyMatch[0].length);
+    }
+    var parts = main.split(/\/\/@/);
+    var body = parts.shift() || '';
+    var conv = parts.map(function(p){
+      var m = p.match(/^([^:：]+)[:：]\s*/);
+      if(m) return {user: m[1], text: p.slice(m[0].length)};
+      return {user: '', text: p};
+    }).filter(function(c){ return c.text.trim(); });
+    return {main: body.trim(), conv: conv};
+  }
+
+  function renderImages(picStr, cls){
+    if(!picStr) return null;
+    var urls = picStr.split(',').filter(function(u){ return u.trim(); });
+    if(!urls.length) return null;
+    var wrap = el('div', cls);
+    urls.forEach(function(u){
+      var img = document.createElement('img');
+      img.src = u;
+      img.setAttribute('referrerpolicy', 'no-referrer');
+      img.setAttribute('loading', 'lazy');
+      if(urls.length === 1) img.className = 'single';
+      wrap.appendChild(img);
+    });
+    return wrap;
+  }
+
   function renderCard(p){
     var c = el('article', 'card');
-    c.appendChild(el('div', 'card-time',
-      p.time_str + (p.source ? ' · 来自 ' + p.source : '')));
-    if(p.title) c.appendChild(el('h3', 'card-title', p.title));
-    var bodyText = p.text || '';
-    c.appendChild(el('div', 'card-text', bodyText || '(无文字内容)'));
+    c.appendChild(el('div', 'card-time', p.time_str || ''));
 
+    // 正文：优先用 raw_html 渲染（保留 @链接、表情图、格式）
+    var body = el('div', 'card-body');
+    if(p.raw_html){
+      body.innerHTML = sanitizeHtml(p.raw_html);
+    } else {
+      body.textContent = p.text || '(无文字内容)';
+    }
+    c.appendChild(body);
+
+    // 正文配图
+    var mainImgs = renderImages(p.pic, 'post-images');
+    if(mainImgs) c.appendChild(mainImgs);
+
+    // 引用内容（retweeted_status）
     if(p.has_retweet){
       var q = el('div', 'quote');
       var h = el('div', 'quote-head');
-      h.appendChild(document.createTextNode('引用 @'));
+      h.appendChild(document.createTextNode('@'));
       h.appendChild(el('b', null, p.rt_user || '未知用户'));
       if(p.rt_time_str) h.appendChild(document.createTextNode(' · ' + p.rt_time_str));
       q.appendChild(h);
-      q.appendChild(el('div', 'quote-text', p.rt_text || '(原帖无文字)'));
+      var qbody = el('div', 'quote-body');
+      if(p.rt_raw_html){
+        qbody.innerHTML = sanitizeHtml(p.rt_raw_html);
+      } else {
+        qbody.textContent = p.rt_text || '(原帖无文字)';
+      }
+      var qimgs = renderImages(p.rt_pic, 'post-images');
+      if(qimgs) qbody.appendChild(qimgs);
+      q.appendChild(qbody);
       if(p.rt_id){
         q.appendChild(extLink('https://xueqiu.com/' + p.rt_user_id + '/' + p.rt_id,
-                              '查看原帖 →', 'qu-link'));
+                              '查看原帖 →', 'card-link'));
       }
       c.appendChild(q);
     }
 
-    var f = el('div', 'card-foot');
-    f.appendChild(el('span', null,
-      '转发 ' + p.retweet_count + ' · 评论 ' + p.reply_count + ' · 赞 ' + p.like_count));
-    f.appendChild(extLink(p.url, '雪球原帖 →'));
-    c.appendChild(f);
+    // 前后文对话链（text 中的 //@用户: ...）
+    var split = splitConversation(p.text || '');
+    if(split.conv.length){
+      var conv = el('div', 'conv');
+      split.conv.forEach(function(item){
+        var line = el('div', 'conv-item');
+        if(item.user){
+          line.appendChild(el('span', 'conv-user', '@' + item.user + ' '));
+        }
+        line.appendChild(document.createTextNode(item.text));
+        conv.appendChild(line);
+      });
+      c.appendChild(conv);
+    }
+
+    c.appendChild(extLink(p.url, '雪球原帖 →', 'card-link'));
     return c;
   }
 
@@ -1138,6 +1253,19 @@ class XueqiuClient:
                                (code, data.get("error_description", "")))
         return data
 
+    def fetch_status_detail(self, status_id):
+        """获取单帖完整内容（用于时间线中被截断的引用帖）。
+        返回 status dict，失败返回 None。"""
+        url = "%s/statuses/show.json?id=%s" % (BASE_URL, status_id)
+        try:
+            text = self._http_get(url)
+            data = json.loads(text)
+            if isinstance(data, dict) and not data.get("error_code"):
+                return data
+        except Exception as e:
+            log("抓取单帖详情 %s 失败: %s" % (status_id, e))
+        return None
+
     def is_logged_in(self):
         """根据 cookie 判断当前会话是否为真实登录态。
         访客会话的 xq_id_token 中 uid=-1，必须明确拒绝。"""
@@ -1161,6 +1289,7 @@ def parse_status(status, user_id):
     rt_rec = None
     if rt and rt.get("id"):
         rt_user = rt.get("user") or {}
+        rt_pic = _normalize_pic(rt.get("pic") or rt.get("firstImg") or "")
         rt_rec = {
             "rt_id": rt.get("id"),
             "rt_user_id": rt.get("user_id"),
@@ -1168,6 +1297,8 @@ def parse_status(status, user_id):
             "rt_created_at": rt.get("created_at"),
             "rt_text": html_to_text(rt.get("description", "")),
             "rt_raw_html": rt.get("description", ""),
+            "rt_pic": rt_pic,
+            "rt_truncated": bool(rt.get("truncated")),
         }
 
     reply_count = status.get("reply_count")
@@ -1182,6 +1313,7 @@ def parse_status(status, user_id):
         "title": status.get("title", "") or "",
         "text": html_to_text(status.get("description", "")),
         "raw_html": status.get("description", ""),
+        "pic": _normalize_pic(status.get("pic") or status.get("firstImg") or ""),
         "has_retweet": rt_rec is not None,
         "rt_id": None,
         "rt_user_id": None,
@@ -1189,6 +1321,7 @@ def parse_status(status, user_id):
         "rt_created_at": None,
         "rt_text": "",
         "rt_raw_html": "",
+        "rt_pic": "",
         "reply_count": int(reply_count or 0),
         "retweet_count": int(status.get("retweet_count", 0) or 0),
         "like_count": int(status.get("like_count", 0) or 0),
@@ -1197,6 +1330,15 @@ def parse_status(status, user_id):
     if rt_rec:
         rec.update(rt_rec)
     return rec
+
+
+def _normalize_pic(pic_str):
+    """雪球 pic 字段可能是逗号分隔的多图 URL，统一为逗号分隔字符串"""
+    if not pic_str:
+        return ""
+    urls = [u.strip() for u in str(pic_str).split(",") if u.strip()]
+    # 去掉缩略图尺寸后缀之外的脏数据
+    return ",".join(urls)
 
 
 def format_post(rec):
@@ -1297,6 +1439,15 @@ def crawl_full_history(client, storage, user_id, data_dir, max_pages=1000,
         page_new = 0
         for st in statuses:
             rec = parse_status(st, user_id)
+            # 引用帖内容被截断时，拉取单帖全文补全（避免长引用显示不全）
+            if rec.get("has_retweet") and rec.get("rt_truncated"):
+                detail = client.fetch_status_detail(rec["rt_id"])
+                if detail and not detail.get("truncated"):
+                    rt_user = (detail.get("user") or {})
+                    rec["rt_text"] = html_to_text(detail.get("description", ""))
+                    rec["rt_raw_html"] = detail.get("description", "")
+                    rec["rt_pic"] = _normalize_pic(
+                        detail.get("pic") or detail.get("firstImg") or "")
             if storage.upsert(rec):
                 page_new += 1
                 new_total += 1
@@ -1461,6 +1612,13 @@ def run(args):
                 break
             for st in statuses:
                 rec = parse_status(st, args.user_id)
+                if rec.get("has_retweet") and rec.get("rt_truncated"):
+                    detail = client.fetch_status_detail(rec["rt_id"])
+                    if detail and not detail.get("truncated"):
+                        rec["rt_text"] = html_to_text(detail.get("description", ""))
+                        rec["rt_raw_html"] = detail.get("description", "")
+                        rec["rt_pic"] = _normalize_pic(
+                            detail.get("pic") or detail.get("firstImg") or "")
                 is_new = storage.upsert(rec)
                 if is_new:
                     new_count += 1
