@@ -332,18 +332,42 @@ _GATE_HTML = """
 </style>
 <script>
 (function(){
+  var KEY='xq_snapshot_pwd';
+  function tryDecrypt(pwd){
+    if(!window.__xqDecrypt) return false;
+    window.__xqDecrypt(pwd).then(function(){
+      try{ localStorage.setItem(KEY,pwd); }catch(e){}
+    }).catch(function(){
+      try{ localStorage.removeItem(KEY); }catch(e){}
+    });
+    return true;
+  }
+  function getFromUrl(){
+    var m=location.hash.match(/[#&]pwd=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
   document.addEventListener('DOMContentLoaded',function(){
     var form=document.getElementById('gateForm');
     var input=document.getElementById('gateInput');
     var button=document.getElementById('gateSubmit');
     var err=document.getElementById('gateErr');
     input.focus();
+    // 优先用 URL 参数，其次用 localStorage 记忆
+    var urlPwd=getFromUrl();
+    if(urlPwd){ input.value=urlPwd; tryDecrypt(urlPwd); }
+    else {
+      try{
+        var saved=localStorage.getItem(KEY);
+        if(saved){ input.value=saved; tryDecrypt(saved); }
+      }catch(e){}
+    }
     form.addEventListener('submit',function(ev){
       ev.preventDefault();
       err.textContent='';
       if(!window.__xqDecrypt){ err.textContent='页面尚未准备好'; return; }
       button.disabled=true;
       window.__xqDecrypt(input.value)
+        .then(function(){ try{ localStorage.setItem(KEY,input.value); }catch(e){} })
         .catch(function(){ err.textContent='口令不正确或数据无法解密'; input.select(); })
         .then(function(){ button.disabled=false; });
     });
